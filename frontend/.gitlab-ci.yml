@@ -1,0 +1,43 @@
+# Pipeline du frontend Angular — inclus par le .gitlab-ci.yml racine
+# (utilisable seul si le frontend est dans son propre dépôt : retirer « frontend/ » des chemins)
+
+.frontend-rules:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: [frontend/**/*]
+    - if: $CI_COMMIT_BRANCH
+      changes: [frontend/**/*]
+
+frontend-build:
+  stage: test
+  extends: .frontend-rules
+  image: node:22-alpine
+  cache:
+    key:
+      files: [frontend/package-lock.json]
+    paths: [frontend/.npm]
+  script:
+    - cd frontend
+    - npm ci --cache .npm --prefer-offline
+    - npx ng build
+  artifacts:
+    paths: [frontend/dist/]
+    expire_in: 1 week
+
+frontend-image:
+  stage: package
+  needs: [frontend-build]
+  image: docker:27
+  services: [docker:27-dind]
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    IMAGE: $CI_REGISTRY_IMAGE/frontend
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: [frontend/**/*]
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker pull "$IMAGE:latest" || true
+    - docker build --cache-from "$IMAGE:latest" -t "$IMAGE:$CI_COMMIT_SHORT_SHA" -t "$IMAGE:latest" frontend
+    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"

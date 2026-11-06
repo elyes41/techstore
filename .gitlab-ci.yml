@@ -1,0 +1,46 @@
+# Pipeline GitLab de TechStore
+#   test    : compilation backend (mvn verify) + build Angular   — sur chaque branche / merge request
+#   package : images Docker poussées dans le registre GitLab      — sur la branche principale
+#   deploy  : mise à jour du serveur OVH par SSH                   — sur la branche principale
+#
+# Variables à créer dans Settings > CI/CD > Variables :
+#   SSH_PRIVATE_KEY  (type File, protégée)  clé privée de l'utilisateur « deploy » du VPS
+#   DEPLOY_HOST      ex. 51.xx.xx.xx ou vps-xxxx.vps.ovh.net
+#   DEPLOY_USER      ex. deploy
+#   SSH_KNOWN_HOSTS  sortie de : ssh-keyscan <DEPLOY_HOST>
+
+stages: [test, package, deploy]
+
+include:
+  - local: backend/.gitlab-ci.yml
+  - local: frontend/.gitlab-ci.yml
+
+deploy-ovh:
+  stage: deploy
+  image: alpine:3.20
+  needs:
+    - job: backend-image
+      optional: true
+    - job: frontend-image
+      optional: true
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH && $DEPLOY_HOST
+  environment:
+    name: production
+  resource_group: production
+  before_script:
+    - apk add --no-cache openssh-client
+    - mkdir -p ~/.ssh && chmod 700 ~/.ssh
+    - cp "$SSH_PRIVATE_KEY" ~/.ssh/id_deploy && chmod 600 ~/.ssh/id_deploy
+    - echo "$SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+  script:
+    - SSH="ssh -i $HOME/.ssh/id_deploy $DEPLOY_USER@$DEPLOY_HOST"
+    # fichiers de déploiement toujours synchronisés avec le dépôt
+    - scp -i $HOME/.ssh/id_deploy deploy/docker-compose.prod.yml deploy/Caddyfile "$DEPLOY_USER@$DEPLOY_HOST:/opt/techstore/"
+    - $SSH "cd /opt/techstore
+        && echo '$CI_REGISTRY_PASSWORD' | docker login -u '$CI_REGISTRY_USER' --password-stdin $CI_REGISTRY
+        && sed -i 's|^REGISTRY=.*|REGISTRY=$CI_REGISTRY_IMAGE|' .env
+        && docker compose -f docker-compose.prod.yml pull
+        && docker compose -f docker-compose.prod.yml up -d --remove-orphans
+        && docker image prune -f
+        && docker logout $CI_REGISTRY"

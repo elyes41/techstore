@@ -1,0 +1,45 @@
+# Pipeline du backend Quarkus — inclus par le .gitlab-ci.yml racine
+# (utilisable seul si le backend est dans son propre dépôt : retirer « backend/ » des chemins)
+
+.backend-rules:
+  rules:
+    - if: $CI_PIPELINE_SOURCE == "merge_request_event"
+      changes: [backend/**/*]
+    - if: $CI_COMMIT_BRANCH
+      changes: [backend/**/*]
+
+backend-build:
+  stage: test
+  extends: .backend-rules
+  image: maven:3.9-eclipse-temurin-21
+  variables:
+    MAVEN_OPTS: "-Dmaven.repo.local=$CI_PROJECT_DIR/.m2/repository"
+  cache:
+    key: backend-maven
+    paths: [.m2/repository]
+  script:
+    - cd backend
+    - mvn -B verify
+  artifacts:
+    when: always
+    reports:
+      junit: backend/target/surefire-reports/TEST-*.xml
+    expire_in: 1 week
+
+backend-image:
+  stage: package
+  needs: [backend-build]
+  image: docker:27
+  services: [docker:27-dind]
+  variables:
+    DOCKER_TLS_CERTDIR: "/certs"
+    IMAGE: $CI_REGISTRY_IMAGE/backend
+  rules:
+    - if: $CI_COMMIT_BRANCH == $CI_DEFAULT_BRANCH
+      changes: [backend/**/*]
+  script:
+    - echo "$CI_REGISTRY_PASSWORD" | docker login -u "$CI_REGISTRY_USER" --password-stdin "$CI_REGISTRY"
+    - docker pull "$IMAGE:latest" || true
+    - docker build --cache-from "$IMAGE:latest" -t "$IMAGE:$CI_COMMIT_SHORT_SHA" -t "$IMAGE:latest" backend
+    - docker push "$IMAGE:$CI_COMMIT_SHORT_SHA"
+    - docker push "$IMAGE:latest"

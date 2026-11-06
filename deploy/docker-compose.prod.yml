@@ -1,0 +1,77 @@
+# Production sur le VPS OVH (copié dans /opt/techstore par le pipeline)
+# Les images sont construites par GitLab CI / GitHub Actions ; ici on ne fait que les lancer.
+#   Caddy (HTTPS Let's Encrypt automatique) -> frontend (Nginx + Angular) -> backend (Quarkus) -> MongoDB
+services:
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on: [frontend]
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    environment:
+      DOMAIN: ${DOMAIN}
+      ACME_EMAIL: ${ACME_EMAIL}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+  frontend:
+    image: ${REGISTRY}/frontend:${TAG:-latest}
+    restart: unless-stopped
+    depends_on: [backend]
+
+  backend:
+    image: ${REGISTRY}/backend:${TAG:-latest}
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    environment:
+      MONGODB_URI: mongodb://${MONGO_USER}:${MONGO_PASSWORD}@mongo:27017/?authSource=admin
+      MONGODB_DATABASE: techstore
+      DEMO_DATA: "false"
+      ADMIN_EMAIL: ${ADMIN_EMAIL}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD}
+      JWT_ISSUER: https://${DOMAIN}
+      JWT_PRIVATE_KEY: file:/run/keys/privateKey.pem
+      JWT_PUBLIC_KEY: file:/run/keys/publicKey.pem
+      UPLOAD_DIR: /data/uploads
+      PUBLIC_URL: https://${DOMAIN}
+      WHATSAPP_NUMBER: ${WHATSAPP_NUMBER:-}
+      MAIL_FROM: ${MAIL_FROM}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT:-465}
+      SMTP_USER: ${SMTP_USER}
+      SMTP_PASSWORD: ${SMTP_PASSWORD}
+      SMTP_SSL: ${SMTP_SSL:-true}
+      SMTP_STARTTLS: ${SMTP_STARTTLS:-DISABLED}
+      JAVA_TOOL_OPTIONS: -XX:MaxRAMPercentage=60
+    volumes:
+      - uploads:/data/uploads
+      - ./keys:/run/keys:ro
+
+  mongo:
+    image: mongo:8.0
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_USER}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_PASSWORD}
+    volumes:
+      - mongodata:/data/db
+      - ./backups:/backups
+    # pas de port publié : MongoDB n'est jamais exposé sur Internet
+    # (accès : voir « Exploitation » dans DEPLOIEMENT-OVH.md)
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+
+volumes:
+  mongodata:
+  uploads:
+  caddy_data:
+  caddy_config:
